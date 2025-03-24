@@ -1,1 +1,4 @@
 streamlit==1.38.0
+pandas==1.4.2
+requests==2.27.1
+pyspark==3.2.1  # Ensure you are running this version for compatibility

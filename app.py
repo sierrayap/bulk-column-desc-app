@@ -1,16 +1,12 @@
 import streamlit as st
 import pandas as pd
+from pyspark.sql import SparkSession
 from helpers import get_table_list, loop_schema_info, populate_column_desc, import_column_desc
 
-
-# Initialize SparkSession to test PySpark availability
-def check_spark_session():
-    spark = SparkSession.builder.getOrCreate()
-    print(f"Spark version: {spark.version}")
-    return spark
-
-# Check if PySpark is available
-spark = check_spark_session()
+# Create Spark session directly in app.py
+spark = SparkSession.builder \
+    .appName("Bulk Column Description Editor") \
+    .getOrCreate()
 
 
 # Streamlit UI

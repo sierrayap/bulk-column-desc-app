@@ -1,6 +1,6 @@
+from pyspark.sql import SparkSession
 import streamlit as st
 import pandas as pd
-from pyspark.sql import SparkSession
 from helpers import get_table_list, loop_schema_info, populate_column_desc, import_column_desc
 
 # Create Spark session directly in app.py

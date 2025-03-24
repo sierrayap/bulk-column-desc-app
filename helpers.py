@@ -1,43 +1,72 @@
-import streamlit as st
-import pandas as pd
-from helpers import get_table_list, loop_schema_info, populate_column_desc, import_column_desc
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit, col, regexp_replace
+from pyspark.sql.types import StructType, StructField, StringType
+import random
 
-# Streamlit UI
-def main():
-    st.title("Bulk Column Description Editor")
+# Initialize Spark session (ensure it's available)
+spark = SparkSession.builder.appName("StreamlitApp").getOrCreate()
 
-    # Step 1: Input fields for catalog and schema
-    catalog = st.text_input("Catalog", "")
-    schema = st.text_input("Schema", "")
+# Function to get the list of tables in the schema
+def get_table_list(schema_location: str):
+    tables = spark.sql(f"SHOW TABLES IN {schema_location}").select("tableName").collect()
+    return tables
 
-    if catalog and schema:
-        # Step 2: Fetch tables list based on catalog.schema
-        schema_location = f"{catalog}.{schema}"
-        table_list = get_table_list(schema_location)
-        
-        if table_list:
-            st.write(f"Found {len(table_list)} tables in {catalog}.{schema}.")
+# Function to get schema info (columns, data types, comments) for a given table
+def get_schema_info(table_location: str):
+    df = spark.read.table(table_location)
+    schema = StructType([StructField("Column Name", StringType(), True), StructField("Data Type", StringType(), True), StructField("Comment", StringType(), True)])
+    schema_info = spark.sql(f"DESCRIBE TABLE {table_location}").collect()
+    schema_df = spark.createDataFrame(schema_info, schema)
+    return schema_df
 
-            # Step 3: Get schema info for each table
-            df = loop_schema_info(table_list)
-            st.write(f"Columns descriptions for the tables in {catalog}.{schema}:")
-            
-            # Step 4: Display the editable table for column descriptions
-            edited_df = st.experimental_data_editor(df)
-            
-            # Step 5: Accept and import button
-            if st.button('Accept and Import'):
-                if edited_df is not None:
-                    import_column_desc(edited_df, catalog, schema)
-                    st.success("Column descriptions updated successfully.")
-                else:
-                    st.error("No data to import. Please ensure changes are made to the table.")
+# Loop through tables and get schema information for all columns
+def loop_schema_info(table_list: list):
+    schema = StructType([StructField("Table Name", StringType(), True), StructField("Column Name", StringType(), True), StructField("Data Type", StringType(), True), StructField("Comment", StringType(), True)])
+    df = spark.createDataFrame([], schema)
+    for table in table_list:
+        table_loc = f"{table.tableName}"  # Assuming tables are in the current catalog/schema
+        df_add = get_schema_info(table_loc).withColumn("Table Name", lit(table.tableName))
+        df_add = df_add.select("Table Name", *[col for col in df_add.columns if col != "Table Name"])
+        df = df.union(df_add)
+    return df
 
-        else:
-            st.warning(f"No tables found in {catalog}.{schema}.")
+# Function to generate AI-based column descriptions
+def generate_column_desc(table_name, column_name, catalog, schema):
+    # Example query to generate column descriptions using an AI model
+    query = f"""
+    SELECT ai_query(
+        'databricks-meta-llama-3-3-70b-instruct', 
+        'Generate a 1 sentence description of the type of information that the column ''{column_name}'' from the table ''{table_name}'' in schema {schema} would contain.'
+    ) AS column_description 
+    """
+    column_desc = spark.sql(query)
+    column_desc = column_desc.withColumn("cleaned_column", regexp_replace("column_description", "'", ""))
+    column_desc_list = column_desc.collect()
+    if column_desc_list:
+        return column_desc_list[0]['cleaned_column']
     else:
-        st.warning("Please provide both Catalog and Schema.")
+        return "Description not available"
 
-# Run the Streamlit app
-if __name__ == "__main__":
-    main()
+# Function to apply AI descriptions to all columns in a table
+def populate_column_desc(df, catalog, schema):
+    column_descriptions = []
+    for row in df.collect():
+        table_name = row['Table Name']
+        column_name = row['Column Name']
+        comment = generate_column_desc(table_name, column_name, catalog, schema)
+        column_descriptions.append((table_name, column_name, comment))
+    new_columns = ['Table Name', 'Column Name', 'Comment']
+    return spark.createDataFrame(column_descriptions, new_columns)
+
+# Function to import updated column descriptions into the database
+def import_column_desc(df, catalog, schema):
+    for row in df.collect():
+        table_name = row["Table Name"]
+        column_name = row["Column Name"]
+        comment = row["Comment"]
+        query = f"COMMENT ON COLUMN {catalog}.{schema}.{table_name}.{column_name} IS '{comment}';"
+        try:
+            spark.sql(query)
+        except Exception as e:
+            print(f"Error executing query: {query}")
+            print(f"Error: {e}")
